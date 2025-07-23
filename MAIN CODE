@@ -1,108 +1,174 @@
-function sendJejuWeatherEmail() {
-  // 강두현 제작
-  const url = "https://amo.kma.go.kr/weather/airport.do?icaoCode=RKPC";
-  const recipientEmail = "youngjoonkim@kas.co.kr"; // Parameterized for clarity
-  let html;
-
-  // Fetch HTML with error handling
-  try {
-    html = UrlFetchApp.fetch(url).getContentText();
-  } catch (e) {
-    Logger.log(`Failed to fetch URL: ${e.message}`);
-    return; // Exit if fetch fails
-  }
-
-  // Extract "feels like" temperature
-  const feelsMatch = html.match(/체감\(([\d.]+)℃\)/);
-  const feelsLike = feelsMatch ? parseFloat(feelsMatch[1]) : null;
-
-  // Extract wea_air_info block
-  const blockMatch = html.match(/<div[^>]*class=["']wea_air_info["'][^>]*>([\s\S]*?)<\/div>/);
-  const infoBlock = blockMatch ? blockMatch[1] : "";
-
-  // Helper function to extract and sanitize data
-  const extract = (label) => {
-    const regex = new RegExp(`${label}\\s*:\\s*<b[^>]*>([^<]*)</b>`, "i");
-    const match = infoBlock.match(regex);
-    return match ? match[1].trim().replace(/[<>]/g, "") : "정보 없음"; // Sanitize HTML characters
+function fetchWeatherData() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = spreadsheet.getActiveSheet();
+  
+  const baseUrl = "https://www.weather.go.kr/w/observation/land/aws-obs.do";
+  const params = {
+    'db': 'MINDB_01M',
+    'tm': Utilities.formatDate(new Date(), "Asia/Seoul", "yyyy.MM.dd%20HH:mm"),
+    'stnId': '890',
+    'sidoCode': '5000000000'
   };
+  
+  const url = baseUrl + "?" + Object.entries(params)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+    
+  try {
+    const response = UrlFetchApp.fetch(url);
+    const html = response.getContentText();
+    Logger.log("HTML received. Length: " + html.length);
+    
+    // 헤더가 없을 경우 추가
+    if (sheet.getLastRow() === 0) {
+      sheet.appendRow([
+        "시간",
+        "습도(%)",
+        "기온(°C)",
+        "체감온도(°C)",
+        "강수유무",
+        "1시간강수(mm)",
+        "일강수(mm)",
+        "10분풍향",
+        "10분풍속(m/s)"
+      ]);
+    }
+    
+    const newData = parseWeatherTable(html);
+    
+    if (newData && newData.length > 0) {
+      // 가장 최신 데이터만 가져옴
+      const latestData = newData[0];
+      
+      // 기존 데이터의 최신 시간 확인
+      let lastRecordedTime = "";
+      if (sheet.getLastRow() > 1) {
+        lastRecordedTime = sheet.getRange(2, 1).getValue();
+      }
+      
+      // 최신 데이터의 시간이 다른 경우에만 추가
+      if (latestData[0] !== lastRecordedTime) {
+        sheet.insertRowAfter(1);
+        sheet.getRange(2, 1, 1, latestData.length).setValues([latestData]);
+        Logger.log(`Added new data: ${latestData.join(', ')}`);
+        
+        // 체감온도 확인 및 이메일 발송
+        checkTemperatureAndSendEmail(latestData);
+      } else {
+        Logger.log("No new data to add");
+      }
+    }
+    
+  } catch (error) {
+    Logger.log("Error: " + error.toString());
+  }
+}
 
-  const windDir = extract("풍향");
-  const windSpeed = extract("풍속");
-  const visibility = extract("시정");
-  const cloudBase = extract("운고");
-  const rainfall = extract("일강수");
-
-  // Log to spreadsheet
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const now = new Date();
-  sheet.appendRow([now, feelsLike, windDir, windSpeed, visibility, cloudBase, rainfall]);
-
-  // Email sending condition
-  if (feelsLike !== null && feelsLike >= 32) {
-    // Get recent 5 records
-    const lastRow = sheet.getLastRow();
-    const startRow = Math.max(lastRow - 4, 2); // Ensure at least row 2
-    const recent = sheet.getRange(startRow, 1, Math.min(lastRow - startRow + 1, 5), 7).getValues();
-
-    // Format date for email display
-    const formatDate = (date) => {
-      return Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
-    };
-
-    // Build HTML table for recent records
-    let feelsTable = `
-      <table border="1" cellpadding="4">
-        <tr>
-          <th>시간</th>
-          <th>체감온도</th>
-          <th>풍향</th>
-          <th>풍속</th>
-          <th>시정</th>
-          <th>운고</th>
-          <th>일강수</th>
-        </tr>`;
-    recent.forEach(row => {
-      feelsTable += `
-        <tr>
-          <td>${formatDate(row[0])}</td>
-          <td>${row[1] !== null ? row[1] + "°C" : "정보 없음"}</td>
-          <td>${row[2]}</td>
-          <td>${row[3]}</td>
-          <td>${row[4]}</td>
-          <td>${row[5]}</td>
-          <td>${row[6]}</td>
-        </tr>`;
-    });
-    feelsTable += "</table>";
-
-    // Send email
+function checkTemperatureAndSendEmail(latestData) {
+  const feelingTemp = parseFloat(latestData[3]); // 체감온도는 4번째 열
+  
+  if (feelingTemp >= 33) {
+    const emailAddress = "youngjoonkim@kas.co.kr"; // 수신자 이메일 주소
+    const subject = `제동목장 현재 체감온도 ${feelingTemp}°C`;
+    
+    // 이메일 본문 구성
+    const body = `
+측정 시각: ${latestData[0]}
+체감온도: ${latestData[3]}°C
+기온: ${latestData[2]}°C
+습도: ${latestData[1]}%
+1시간강수: ${latestData[5]}mm
+일강수: ${latestData[6]}mm
+    `.trim();
+    
+    // 이메일 발송
     try {
       MailApp.sendEmail({
-        to: recipientEmail,
-        subject: `제주공항 체감 ${feelsLike}°C`, // Fixed string template
-        htmlBody: `
-          <p><strong>현재 제주공항 체감온도:</strong> ${feelsLike}°C</p>
-          <p><strong>최근 체감온도 기록:</strong></p>
-          ${feelsTable}
-          <hr>
-          <p><strong>상세 관측 정보:</strong></p>
-          <ul>
-            <li><strong>풍향:</strong> ${windDir}</li>
-            <li><strong>풍속:</strong> ${windSpeed}</li>
-            <li><strong>시정:</strong> ${visibility}</li>
-            <li><strong>운고:</strong> ${cloudBase}</li>
-            <li><strong>일강수:</strong> ${rainfall}</li>
-          </ul>
-          <hr>
-          <p><strong>기상청 홈페이지:</strong><br>
-          <a href="${url}" target="_blank">제주공항 실시간 관측 정보 바로가기</a></p>
-          <p>— 자동 모니터링 시스템</p>
-        `
+        to: emailAddress,
+        subject: subject,
+        body: body
       });
-      Logger.log("메일 전송 완료");
-    } catch (e) {
-      Logger.log(`Failed to send email: ${e.message}`);
+      Logger.log(`Email sent - Feeling temperature: ${feelingTemp}°C`);
+    } catch (error) {
+      Logger.log("Email sending error: " + error.toString());
     }
   }
+}
+
+function parseWeatherTable(html) {
+  const tableData = [];
+  
+  try {
+    const trRegex = /<tr>\s*<td[^>]*class="aws-table[^>]*>.*?<\/tr>/gs;
+    const rows = html.match(trRegex);
+    
+    if (rows) {
+      Logger.log(`Found ${rows.length} rows`);
+      
+      rows.forEach(row => {
+        const timeMatch = row.match(/<td[^>]*><span>(\d{2}:\d{2})<\/span>/);
+        if (!timeMatch) return;
+        
+        const time = timeMatch[1];
+        
+        const rainMatch = row.match(/pty-(\w+)/);
+        const rainStatus = rainMatch ? (rainMatch[1] === 'off' ? 'X' : 'O') : '';
+        
+        const values = [];
+        const tdRegex = /<td[^>]*class="aws-table[^>]*>(?:<span[^>]*>)?([^<]+)(?:<\/span>)?<\/td>/g;
+        let match;
+        while ((match = tdRegex.exec(row)) !== null) {
+          values.push(match[1].trim());
+        }
+        
+        const windSpeeds = [];
+        const windSpeedRegex = /<span data-role="aws-wind-speed-value">([^<]+)<\/span>/g;
+        while ((match = windSpeedRegex.exec(row)) !== null) {
+          windSpeeds.push(match[1]);
+        }
+        
+        const rowData = [
+          time,                   // A열: 시간
+          values[10],             // B열: 습도
+          values[4],              // C열: 기온
+          values[5],              // D열: 체감온도
+          rainStatus,             // E열: 강수유무
+          values[2],              // F열: 1시간강수
+          values[3],              // G열: 일강수
+          values[6],              // H열: 10분풍향
+          windSpeeds[0]           // I열: 10분풍속
+        ];
+        
+        if (time && rowData.some(value => value !== undefined)) {
+          tableData.push(rowData);
+        }
+      });
+    }
+  } catch (error) {
+    Logger.log("Parsing Error: " + error.toString());
+    return null;
+  }
+  
+  return tableData;
+}
+
+function createTrigger() {
+  deleteTriggers();
+  
+  ScriptApp.newTrigger('fetchWeatherData')
+    .timeBased()
+    .everyMinutes(10)
+    .create();
+  Logger.log("New trigger created to run every 10 minutes");
+}
+
+function deleteTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => ScriptApp.deleteTrigger(trigger));
+}
+
+function manualRun() {
+  Logger.log("Manual execution started");
+  fetchWeatherData();
+  Logger.log("Manual execution completed");
 }
