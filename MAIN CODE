@@ -1,0 +1,108 @@
+function sendJejuWeatherEmail() {
+  // 강두현 제작
+  const url = "https://amo.kma.go.kr/weather/airport.do?icaoCode=RKPC";
+  const recipientEmail = "youngjoonkim@kas.co.kr"; // Parameterized for clarity
+  let html;
+
+  // Fetch HTML with error handling
+  try {
+    html = UrlFetchApp.fetch(url).getContentText();
+  } catch (e) {
+    Logger.log(`Failed to fetch URL: ${e.message}`);
+    return; // Exit if fetch fails
+  }
+
+  // Extract "feels like" temperature
+  const feelsMatch = html.match(/체감\(([\d.]+)℃\)/);
+  const feelsLike = feelsMatch ? parseFloat(feelsMatch[1]) : null;
+
+  // Extract wea_air_info block
+  const blockMatch = html.match(/<div[^>]*class=["']wea_air_info["'][^>]*>([\s\S]*?)<\/div>/);
+  const infoBlock = blockMatch ? blockMatch[1] : "";
+
+  // Helper function to extract and sanitize data
+  const extract = (label) => {
+    const regex = new RegExp(`${label}\\s*:\\s*<b[^>]*>([^<]*)</b>`, "i");
+    const match = infoBlock.match(regex);
+    return match ? match[1].trim().replace(/[<>]/g, "") : "정보 없음"; // Sanitize HTML characters
+  };
+
+  const windDir = extract("풍향");
+  const windSpeed = extract("풍속");
+  const visibility = extract("시정");
+  const cloudBase = extract("운고");
+  const rainfall = extract("일강수");
+
+  // Log to spreadsheet
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const now = new Date();
+  sheet.appendRow([now, feelsLike, windDir, windSpeed, visibility, cloudBase, rainfall]);
+
+  // Email sending condition
+  if (feelsLike !== null && feelsLike >= 32) {
+    // Get recent 5 records
+    const lastRow = sheet.getLastRow();
+    const startRow = Math.max(lastRow - 4, 2); // Ensure at least row 2
+    const recent = sheet.getRange(startRow, 1, Math.min(lastRow - startRow + 1, 5), 7).getValues();
+
+    // Format date for email display
+    const formatDate = (date) => {
+      return Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+    };
+
+    // Build HTML table for recent records
+    let feelsTable = `
+      <table border="1" cellpadding="4">
+        <tr>
+          <th>시간</th>
+          <th>체감온도</th>
+          <th>풍향</th>
+          <th>풍속</th>
+          <th>시정</th>
+          <th>운고</th>
+          <th>일강수</th>
+        </tr>`;
+    recent.forEach(row => {
+      feelsTable += `
+        <tr>
+          <td>${formatDate(row[0])}</td>
+          <td>${row[1] !== null ? row[1] + "°C" : "정보 없음"}</td>
+          <td>${row[2]}</td>
+          <td>${row[3]}</td>
+          <td>${row[4]}</td>
+          <td>${row[5]}</td>
+          <td>${row[6]}</td>
+        </tr>`;
+    });
+    feelsTable += "</table>";
+
+    // Send email
+    try {
+      MailApp.sendEmail({
+        to: recipientEmail,
+        subject: `제주공항 체감 ${feelsLike}°C`, // Fixed string template
+        htmlBody: `
+          <p><strong>현재 제주공항 체감온도:</strong> ${feelsLike}°C</p>
+          <p><strong>최근 체감온도 기록:</strong></p>
+          ${feelsTable}
+          <hr>
+          <p><strong>상세 관측 정보:</strong></p>
+          <ul>
+            <li><strong>풍향:</strong> ${windDir}</li>
+            <li><strong>풍속:</strong> ${windSpeed}</li>
+            <li><strong>시정:</strong> ${visibility}</li>
+            <li><strong>운고:</strong> ${cloudBase}</li>
+            <li><strong>일강수:</strong> ${rainfall}</li>
+          </ul>
+          <hr>
+          <p><strong>기상청 홈페이지:</strong><br>
+          <a href="${url}" target="_blank">제주공항 실시간 관측 정보 바로가기</a></p>
+          <p>— 자동 모니터링 시스템</p>
+        `
+      });
+      Logger.log("메일 전송 완료");
+    } catch (e) {
+      Logger.log(`Failed to send email: ${e.message}`);
+    }
+  }
+}
