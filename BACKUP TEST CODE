@@ -152,28 +152,17 @@ function checkTemperatureAndSendEmail(rowData) {
     const rain = rowData[4];
     const windSpeed = rowData[8];
 
-    // 체감온도 구간별 메시지 설정
-    let alertLevel = "";
-    let alertMessage = "";
-    let workGuideline = "";
-
-    if (feelsLike >= 35) {
-      alertLevel = "위험";
-      alertMessage = "매우 높은 체감온도입니다. 즉시 대응이 필요합니다.";
-      workGuideline = "- 야외작업 중단 권고\n- 1시간 근무시 30분 휴식\n- 실내 작업으로 전환";
-    } else if (feelsLike >= 33) {
-      alertLevel = "경고";
-      alertMessage = "높은 체감온도입니다. 각별한 주의가 필요합니다.";
-      workGuideline = "- 2시간 근무시 20분 휴식\n- 무리한 야외활동 자제";
-    } else if (feelsLike >= 31) {
-      alertLevel = "주의";
-      alertMessage = "체감온도가 높습니다. 주의하시기 바랍니다.";
-      workGuideline = "- 충분한 수분 섭취\n- 직사광선 피하기\n- 적절한 휴식 취하기";
+    // 체감온도 구간별 휴식 시간 설정
+    let restTime = "";
+    if (feelsLike >= 33) {
+      restTime = "2시간 근무시 20분 휴식";
+    } else {
+      restTime = "2시간 근무시 10분 휴식";
     }
 
-    const subject = `[기상${alertLevel}] 체감온도 ${feelsLike}°C - ${alertLevel} 필요`;
+    const subject = `[기상경보] 체감온도 ${feelsLike}°C - 주의 필요`;
     const body = `
-기상 ${alertLevel} 알림
+기상 경보 알림
 
 측정 시간: ${time}
 기온: ${temperature}°C
@@ -182,14 +171,15 @@ function checkTemperatureAndSendEmail(rowData) {
 풍속: ${windSpeed}m/s
 강수유무: ${rain}
 
-${alertMessage}
+체감온도가 ${feelsLike >= 33 ? '33' : '31'}도 이상입니다. 
+- 외출 시 충분한 수분 섭취
+- 직사광선 피하기
+- 무리한 야외활동 자제
 
-안전 수칙:
-${workGuideline}
+${restTime}
+
 
 건강에 유의하시기 바랍니다.
-
-※ 이 알림은 30분 간격으로 발송됩니다.
     `;
 
     // 이메일 수신자 설정 (우선순위: 스프레드시트 → 코드 설정 → 현재 사용자)
@@ -420,7 +410,7 @@ function testEmailAlert() {
 
 // 다양한 온도로 여러 개의 테스트 이메일 발송
 function testMultipleTemperatures() {
-  const temperatures = [29, 31, 33, 35, 38]; // 테스트할 체감온도들
+  const temperatures = [29, 31, 33, 34]; // 테스트할 체감온도들
 
   // 타이머 초기화
   resetEmailTimer();
@@ -504,9 +494,8 @@ function checkEmailSettings() {
       "이 이메일은 기상 알림 시스템이 정상적으로 작동하는지 확인하는 테스트 이메일입니다.\n\n" +
       "체감온도가 31도 이상일 때 30분 간격으로 이와 같은 형식으로 알림 이메일이 발송됩니다.\n\n" +
       "알림 기준:\n" +
-      "• 31도 이상 33도 미만: 주의 단계\n" +
-      "• 33도 이상 35도 미만: 경고 단계\n" +
-      "• 35도 이상: 위험 단계\n\n" +
+      "• 31도 이상 33도 미만: 2시간 근무시 10분 휴식\n" +
+      "• 33도 이상: 2시간 근무시 20분 휴식\n\n" +
       `이메일 설정 우선순위:\n` +
       `1. 스프레드시트 K1 셀: ${sheetEmail || "설정 안됨"}\n` +
       `2. 코드 내 설정: ${codeEmail || "설정 안됨"}\n` +
@@ -534,9 +523,8 @@ function showSetupGuide() {
 3. 별도 설정 없이 구글 계정 이메일 사용
 
 🌡️ 알림 기준:
-- 체감온도 31°C 이상: 주의 단계
-- 체감온도 33°C 이상: 경고 단계  
-- 체감온도 35°C 이상: 위험 단계
+- 체감온도 31°C 이상: 2시간 근무시 10분 휴식
+- 체감온도 33°C 이상: 2시간 근무시 20분 휴식
 
 ⏰ 발송 주기:
 - 데이터 수집: 10분마다
