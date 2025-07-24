@@ -1,9 +1,7 @@
 // ===== 이메일 설정 =====
-// 방법 1: 여기에 직접 이메일 주소를 입력하세요
 const NOTIFICATION_EMAIL = "youngjoonkim@kas.co.kr"; // 원하는 이메일 주소로 변경
 
-// 방법 2: 여러 개의 이메일로 받고 싶다면 아래처럼 설정
- const NOTIFICATION_EMAILS = ["shlee@kas.co.kr", "jejukim54@naver.com", "kunspark@kas.co.kr", "hseongkim@kas.co.kr", "kyuwlee@kas.co.kr", "hyukkim@kas.co.kr"];
+const NOTIFICATION_EMAILS = ["shlee@kas.co.kr", "jejukim54@naver.com", "kunspark@kas.co.kr", "hseongkim@kas.co.kr", "kyuwlee@kas.co.kr", "hyukkim@kas.co.kr"];
 
 // 방법 3: 스프레드시트의 특정 셀에서 이메일 주소를 읽어오기
 // 스프레드시트의 K1 셀에 이메일 주소를 입력하면 자동으로 사용됩니다
@@ -14,6 +12,66 @@ function getEmailFromSheet() {
     if (emailCell && emailCell.includes("@")) {
       return emailCell;
     }
+
+// 다양한 온도로 여러 개의 테스트 이메일 발송
+function testMultipleTemperatures() {
+  const temperatures = [29, 31, 33, 34]; // 테스트할 체감온도들
+
+  // 타이머 초기화
+  resetEmailTimer();
+
+  const now = new Date();
+  const currentHour = now.getHours();
+  const isWorkTime = isWorkHours();
+
+  Logger.log(`=== 다중 온도 테스트 시작 ===`);
+  Logger.log(`현재 시간: ${currentHour}시 (${isWorkTime ? '업무시간' : '업무시간 외'})`);
+
+  temperatures.forEach((temp, index) => {
+    const testTime = new Date();
+    testTime.setMinutes(testTime.getMinutes() - index * 10); // 시간을 다르게 설정
+
+    const testData = [
+      Utilities.formatDate(testTime, "Asia/Seoul", "yyyy-MM-dd HH:mm"),
+      "80",           // 습도
+      String(temp - 3), // 기온 (체감온도보다 3도 낮게)
+      String(temp),   // 체감온도
+      "X",            // 강수유무
+      "0",            // 1시간강수
+      "0",            // 일강수
+      "남서",         // 10분풍향
+      "3.0"           // 10분풍속
+    ];
+
+    Logger.log(`\n테스트 ${index + 1}: 체감온도 ${temp}°C`);
+
+    // 31도 이상인 경우만 이메일 발송 시도
+    if (temp >= 31) {
+      if (index === 1) { // 31도 테스트만 실제 발송 (첫 번째)
+        checkTemperatureAndSendEmail(testData);
+        if (isWorkTime) {
+          Logger.log(`→ 이메일 발송됨 (체감온도: ${temp}°C)`);
+        } else {
+          Logger.log(`→ 업무시간 외로 이메일 미발송 (체감온도: ${temp}°C)`);
+        }
+        // 다음 테스트를 위해 31분 후 시간으로 설정
+        const properties = PropertiesService.getScriptProperties();
+        const futureTime = new Date().getTime() - (31 * 60 * 1000);
+        properties.setProperty('LAST_EMAIL_TIME', futureTime.toString());
+      } else {
+        checkTemperatureAndSendEmail(testData);
+        Logger.log(`→ 이메일 발송 시도 (체감온도: ${temp}°C)`);
+      }
+    } else {
+      Logger.log(`→ 이메일 미발송 (체감온도: ${temp}°C, 31도 미만)`);
+    }
+
+    // 이메일 발송 간격을 두기 위한 대기
+    Utilities.sleep(1000); // 1초 대기
+  });
+
+  Logger.log("\n=== 모든 테스트 완료! ===");
+}
   } catch (error) {
     Logger.log("Could not read email from sheet: " + error.toString());
   }
@@ -23,7 +81,7 @@ function getEmailFromSheet() {
 // 스프레드시트에 이메일 설정 안내 추가
 function setupEmailCell() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  
+
   // K1 셀에 안내 텍스트 추가
   if (!sheet.getRange("K1").getValue()) {
     sheet.getRange("K1").setValue("이메일주소 입력");
@@ -34,13 +92,44 @@ function setupEmailCell() {
   }
 }
 
+// 마지막 이메일 발송 시간 확인 및 업데이트 함수
+function canSendEmail() {
+  const properties = PropertiesService.getScriptProperties();
+  const lastEmailTime = properties.getProperty('LAST_EMAIL_TIME');
+  const now = new Date().getTime();
+  
+  if (!lastEmailTime) {
+    // 처음 발송하는 경우
+    properties.setProperty('LAST_EMAIL_TIME', now.toString());
+    return true;
+  }
+  
+  const timeDiff = now - parseInt(lastEmailTime);
+  const thirtyMinutes = 30 * 60 * 1000; // 30분을 밀리초로 변환
+  
+  if (timeDiff >= thirtyMinutes) {
+    // 30분이 지났으면 발송 가능
+    properties.setProperty('LAST_EMAIL_TIME', now.toString());
+    return true;
+  }
+  
+  return false; // 30분이 안 지났으면 발송 불가
+}
+
+// 마지막 이메일 발송 시간 초기화 함수 (테스트용)
+function resetEmailTimer() {
+  const properties = PropertiesService.getScriptProperties();
+  properties.deleteProperty('LAST_EMAIL_TIME');
+  Logger.log("이메일 발송 타이머가 초기화되었습니다.");
+}
+
 function fetchWeatherData() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = spreadsheet.getActiveSheet();
-  
+
   // 첫 실행 시 이메일 설정 셀 준비
   setupEmailCell();
-  
+
   const baseUrl = "https://www.weather.go.kr/w/observation/land/aws-obs.do";
   const now = new Date();
   const params = {
@@ -49,16 +138,16 @@ function fetchWeatherData() {
     'stnId': '890',
     'sidoCode': '5000000000'
   };
-  
+
   const url = baseUrl + "?" + Object.entries(params)
     .map(([key, value]) => `${key}=${value}`)
     .join("&");
-    
+
   try {
     const response = UrlFetchApp.fetch(url);
     const html = response.getContentText();
     Logger.log("HTML received. Length: " + html.length);
-    
+
     // 헤더가 없을 경우 추가
     if (sheet.getLastRow() === 0) {
       sheet.appendRow([
@@ -73,52 +162,78 @@ function fetchWeatherData() {
         "10분풍속(m/s)"
       ]);
     }
-    
+
     const newData = parseWeatherTable(html, now);
-    
+
     if (newData && newData.length > 0) {
       // 가장 최신 데이터만 가져옴 (첫 번째 행)
       const latestData = newData[0];
-      
+
       // 기존 데이터의 최신 시간 확인 (두 번째 행)
       let lastRecordedTime = "";
       if (sheet.getLastRow() > 1) {
         lastRecordedTime = sheet.getRange(2, 1).getValue();
       }
-      
+
       // 최신 데이터의 시간이 다른 경우에만 추가
       if (latestData[0] !== lastRecordedTime) {
         sheet.insertRowAfter(1);
         sheet.getRange(2, 1, 1, latestData.length).setValues([latestData]);
         Logger.log(`Added new data: ${latestData[0]} - 체감온도: ${latestData[3]}°C`);
-        
+
         // 체감온도 확인 및 이메일 발송
         checkTemperatureAndSendEmail(latestData);
       } else {
         Logger.log("No new data to add - same time as last record");
       }
     }
-    
+
   } catch (error) {
     Logger.log("Error: " + error.toString());
   }
+}
+
+// 업무시간 체크 함수 (오전 6시~오후 7시가 업무시간)
+function isWorkHours() {
+  const now = new Date();
+  const hour = now.getHours();
+  
+  // 오전 6시(06:00) ~ 오후 6시 59분(18:59)이 업무시간
+  // 오후 7시(19:00) ~ 오전 5시 59분(05:59)은 업무시간 외
+  return hour >= 6 && hour < 19;
 }
 
 function checkTemperatureAndSendEmail(rowData) {
   const time = rowData[0];
   const feelsLike = parseFloat(rowData[3]); // 체감온도
 
-  // 체감온도가 31도 이상일시 이메일 발송
+  // 체감온도가 31도 이상이면서 30분 간격이 지났을 때만 이메일 발송
+  if (feelsLike >= 31) {
+    // 업무시간 체크
+    if (!isWorkHours()) {
+      Logger.log(`체감온도 ${feelsLike}°C - 업무시간 외(19:00~06:00)로 이메일 미발송`);
+      return;
+    }
+    
+    // 30분 간격 체크
+    if (!canSendEmail()) {
+      Logger.log(`체감온도 ${feelsLike}°C - 30분 미경과로 이메일 미발송`);
+      return;
+    }
 
-  
-  
-  // 체감온도가 33도 이상이면 이메일 발송
-  if (feelsLike >= 33) {
     const humidity = rowData[1];
     const temperature = rowData[2];
     const rain = rowData[4];
     const windSpeed = rowData[8];
-    
+
+    // 체감온도 구간별 휴식 시간 설정
+    let restTime = "";
+    if (feelsLike >= 33) {
+      restTime = "2시간 근무시 20분 휴식";
+    } else {
+      restTime = "2시간 근무시 10분 휴식";
+    }
+
     const subject = `[기상경보] 체감온도 ${feelsLike}°C - 주의 필요`;
     const body = `
 기상 경보 알림
@@ -130,29 +245,29 @@ function checkTemperatureAndSendEmail(rowData) {
 풍속: ${windSpeed}m/s
 강수유무: ${rain}
 
-체감온도가 33도 이상입니다. 
+체감온도가 ${feelsLike >= 33 ? '33' : '31'}도 이상입니다. 
 - 외출 시 충분한 수분 섭취
 - 직사광선 피하기
 - 무리한 야외활동 자제
 
-2시간 근무시 20분 휴식 
+${restTime}
 
 
 건강에 유의하시기 바랍니다.
     `;
-    
+
     // 이메일 수신자 설정 (우선순위: 스프레드시트 → 코드 설정 → 현재 사용자)
     let recipient = getEmailFromSheet() || NOTIFICATION_EMAIL;
     if (!recipient || recipient === "your-email@example.com") {
       recipient = Session.getActiveUser().getEmail();
     }
-    
+
     try {
       // 한 명에게 발송
       MailApp.sendEmail(recipient, subject, body);
-      Logger.log(`Email sent to ${recipient} for high temperature alert: ${feelsLike}°C at ${time}`);
-      
-      // 여러 명에게 발송하려면 아래 코드 사용 (위의 한 명 발송 코드는 주석처리)
+      Logger.log(`Email sent to ${recipient} for temperature alert: ${feelsLike}°C at ${time}`);
+
+      // 여러 명에게 발송하려면 아래 코드 사용
       if (typeof NOTIFICATION_EMAILS !== 'undefined' && NOTIFICATION_EMAILS.length > 0) {
          NOTIFICATION_EMAILS.forEach(email => {
            MailApp.sendEmail(email, subject, body);
@@ -162,48 +277,50 @@ function checkTemperatureAndSendEmail(rowData) {
     } catch (error) {
       Logger.log(`Failed to send email: ${error.toString()}`);
     }
+  } else {
+    Logger.log(`체감온도 ${feelsLike}°C - 31도 미만으로 알림 미발송`);
   }
 }
 
 function parseWeatherTable(html, currentDate) {
   const tableData = [];
-  
+
   try {
     const trRegex = /<tr>\s*<td[^>]*class="aws-table[^>]*>.*?<\/tr>/gs;
     const rows = html.match(trRegex);
-    
+
     if (rows) {
       Logger.log(`Found ${rows.length} rows`);
-      
+
       // 현재 날짜 포맷팅
       const year = currentDate.getFullYear();
       const month = String(currentDate.getMonth() + 1).padStart(2, '0');
       const day = String(currentDate.getDate()).padStart(2, '0');
       const dateStr = `${year}-${month}-${day}`;
-      
+
       rows.forEach(row => {
         const timeMatch = row.match(/<td[^>]*><span>(\d{2}:\d{2})<\/span>/);
         if (!timeMatch) return;
-        
+
         const time = timeMatch[1];
         const fullDateTime = `${dateStr} ${time}`; // 연도-월-일 시:분 형식
-        
+
         const rainMatch = row.match(/pty-(\w+)/);
         const rainStatus = rainMatch ? (rainMatch[1] === 'off' ? 'X' : 'O') : '';
-        
+
         const values = [];
         const tdRegex = /<td[^>]*class="aws-table[^>]*>(?:<span[^>]*>)?([^<]+)(?:<\/span>)?<\/td>/g;
         let match;
         while ((match = tdRegex.exec(row)) !== null) {
           values.push(match[1].trim());
         }
-        
+
         const windSpeeds = [];
         const windSpeedRegex = /<span data-role="aws-wind-speed-value">([^<]+)<\/span>/g;
         while ((match = windSpeedRegex.exec(row)) !== null) {
           windSpeeds.push(match[1]);
         }
-        
+
         const rowData = [
           fullDateTime,           // A열: 시간 (연도-월-일 포함)
           values[10],             // B열: 습도
@@ -215,7 +332,7 @@ function parseWeatherTable(html, currentDate) {
           values[6],              // H열: 10분풍향
           windSpeeds[0]           // I열: 10분풍속
         ];
-        
+
         if (fullDateTime && rowData.some(value => value !== undefined)) {
           tableData.push(rowData);
         }
@@ -225,7 +342,7 @@ function parseWeatherTable(html, currentDate) {
     Logger.log("Parsing Error: " + error.toString());
     return null;
   }
-  
+
   return tableData;
 }
 
@@ -235,28 +352,28 @@ function parseWeatherTable(html, currentDate) {
 function cleanOldData() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = spreadsheet.getActiveSheet();
-  
+
   if (sheet.getLastRow() <= 1) return;
-  
+
   const daysToKeep = 720; // 보관 기간 (일) - 필요에 따라 조정
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
-  
+
   const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues();
   let rowsToDelete = [];
-  
+
   for (let i = data.length - 1; i >= 0; i--) {
     const dateTime = new Date(data[i][0]);
     if (dateTime < cutoffDate) {
       rowsToDelete.push(i + 2); // 실제 행 번호 (헤더 포함)
     }
   }
-  
+
   // 아래에서부터 삭제 (인덱스가 변경되지 않도록)
   rowsToDelete.forEach(row => {
     sheet.deleteRow(row);
   });
-  
+
   if (rowsToDelete.length > 0) {
     Logger.log(`Deleted ${rowsToDelete.length} old records (older than ${daysToKeep} days)`);
   }
@@ -264,13 +381,13 @@ function cleanOldData() {
 
 function createTrigger() {
   deleteTriggers();
-  
+
   // 10분마다 날씨 데이터 수집
   ScriptApp.newTrigger('fetchWeatherData')
     .timeBased()
     .everyMinutes(10)
     .create();
-    
+
   // 매일 새벽 3시에 30일 이상 된 데이터 정리 (선택사항)
   // 필요없으면 이 부분은 주석처리하거나 삭제하세요
   ScriptApp.newTrigger('cleanOldData')
@@ -278,7 +395,7 @@ function createTrigger() {
     .everyDays(1)
     .atHour(3)
     .create();
-    
+
   Logger.log("Triggers created: 10분마다 데이터 수집, 매일 새벽 3시 오래된 데이터 정리");
 }
 
@@ -293,48 +410,60 @@ function manualRun() {
   Logger.log("Manual execution completed");
 }
 
-// 이메일 발송 테스트 함수
+// 이메일 발송 테스트 함수 (31도로 수정, 업무시간 체크 포함)
 function testEmailAlert() {
-  // 테스트용 데이터 생성 (체감온도 33도 이상)
+  // 테스트용 데이터 생성 (체감온도 31도 이상)
   const now = new Date();
   const testData = [
     Utilities.formatDate(now, "Asia/Seoul", "yyyy-MM-dd HH:mm"),
     "75",     // 습도
-    "32",     // 기온
-    "35.5",   // 체감온도 (33도 이상으로 설정)
+    "29",     // 기온
+    "32.5",   // 체감온도 (31도 이상으로 설정)
     "X",      // 강수유무
     "0",      // 1시간강수
     "0",      // 일강수
     "남서",   // 10분풍향
     "2.5"     // 10분풍속
   ];
-  
+
   // 실제로 사용될 이메일 주소 확인
   const sheetEmail = getEmailFromSheet();
   const codeEmail = (NOTIFICATION_EMAIL !== "your-email@example.com") ? NOTIFICATION_EMAIL : null;
   const recipient = sheetEmail || codeEmail || Session.getActiveUser().getEmail();
-  
+
+  const currentHour = now.getHours();
+  const isWorkTime = isWorkHours();
+
   Logger.log("테스트 데이터 생성:");
-  Logger.log(`시간: ${testData[0]}`);
+  Logger.log(`시간: ${testData[0]} (시간: ${currentHour}시)`);
   Logger.log(`체감온도: ${testData[3]}°C`);
   Logger.log(`수신 이메일: ${recipient}`);
-  
+  Logger.log(`업무시간 여부: ${isWorkTime ? '업무시간 (이메일 발송 가능)' : '업무시간 외 (이메일 발송 안함)'}`);
+
+  // 테스트를 위해 타이머 초기화
+  resetEmailTimer();
+
   // 이메일 발송 함수 호출
   try {
     checkTemperatureAndSendEmail(testData);
-    Logger.log("테스트 이메일 발송 완료!");
     
+    if (isWorkTime) {
+      Logger.log("테스트 이메일 발송 완료!");
+    } else {
+      Logger.log("업무시간 외로 이메일 발송 안함 (정상 동작)");
+    }
+
     // 스프레드시트에 테스트 데이터 추가 (선택사항)
     const addToSheet = Browser.msgBox(
       "테스트 데이터 추가",
       "테스트 데이터를 스프레드시트에도 추가하시겠습니까?",
       Browser.Buttons.YES_NO
     );
-    
+
     if (addToSheet === Browser.Buttons.YES) {
       const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
       const sheet = spreadsheet.getActiveSheet();
-      
+
       // 헤더가 없으면 추가
       if (sheet.getLastRow() === 0) {
         sheet.appendRow([
@@ -349,12 +478,12 @@ function testEmailAlert() {
           "10분풍속(m/s)"
         ]);
       }
-      
+
       // 테스트 데이터 추가
       sheet.insertRowAfter(1);
       sheet.getRange(2, 1, 1, testData.length).setValues([testData]);
       sheet.getRange(2, 1, 1, 9).setBackground("#ffe6e6"); // 테스트 데이터 표시용 배경색
-      
+
       Logger.log("테스트 데이터가 스프레드시트에 추가되었습니다.");
     }
   } catch (error) {
@@ -362,14 +491,108 @@ function testEmailAlert() {
   }
 }
 
-// 다양한 온도로 여러 개의 테스트 이메일 발송
+// 업무시간 외에도 강제로 테스트 이메일 발송 (개발/테스트 목적)
+function testEmailAlertForceMode() {
+  // 테스트용 데이터 생성 (체감온도 31도 이상)
+  const now = new Date();
+  const testData = [
+    Utilities.formatDate(now, "Asia/Seoul", "yyyy-MM-dd HH:mm"),
+    "75",     // 습도
+    "29",     // 기온
+    "32.5",   // 체감온도 (31도 이상으로 설정)
+    "X",      // 강수유무
+    "0",      // 1시간강수
+    "0",      // 일강수
+    "남서",   // 10분풍향
+    "2.5"     // 10분풍속
+  ];
+
+  const humidity = testData[1];
+  const temperature = testData[2];
+  const feelsLike = parseFloat(testData[3]);
+  const rain = testData[4];
+  const windSpeed = testData[8];
+  const time = testData[0];
+
+  // 체감온도 구간별 휴식 시간 설정
+  let restTime = "";
+  if (feelsLike >= 33) {
+    restTime = "2시간 근무시 20분 휴식";
+  } else {
+    restTime = "2시간 근무시 10분 휴식";
+  }
+
+  const subject = `[기상경보-테스트] 체감온도 ${feelsLike}°C - 주의 필요`;
+  const body = `
+기상 경보 알림 (강제 테스트 모드)
+
+측정 시간: ${time}
+기온: ${temperature}°C
+체감온도: ${feelsLike}°C
+습도: ${humidity}%
+풍속: ${windSpeed}m/s
+강수유무: ${rain}
+
+체감온도가 ${feelsLike >= 33 ? '33' : '31'}도 이상입니다. 
+- 외출 시 충분한 수분 섭취
+- 직사광선 피하기
+- 무리한 야외활동 자제
+
+${restTime}
+
+
+건강에 유의하시기 바랍니다.
+
+※ 이 메일은 강제 테스트 모드로 발송된 테스트 이메일입니다.
+  `;
+
+  // 이메일 수신자 설정
+  const sheetEmail = getEmailFromSheet();
+  const codeEmail = (NOTIFICATION_EMAIL !== "your-email@example.com") ? NOTIFICATION_EMAIL : null;
+  let recipient = sheetEmail || codeEmail;
+  if (!recipient || recipient === "your-email@example.com") {
+    recipient = Session.getActiveUser().getEmail();
+  }
+
+  const currentHour = now.getHours();
+  const isWorkTime = isWorkHours();
+
+  Logger.log("강제 테스트 모드 실행:");
+  Logger.log(`시간: ${time} (시간: ${currentHour}시)`);
+  Logger.log(`체감온도: ${feelsLike}°C`);
+  Logger.log(`수신 이메일: ${recipient}`);
+  Logger.log(`업무시간 여부: ${isWorkTime ? '업무시간' : '업무시간 외'}`);
+  Logger.log("업무시간과 관계없이 강제 발송합니다.");
+
+  try {
+    // 한 명에게 발송
+    MailApp.sendEmail(recipient, subject, body);
+    Logger.log(`강제 테스트 이메일 발송 완료: ${recipient}`);
+
+    // 여러 명에게 발송
+    if (typeof NOTIFICATION_EMAILS !== 'undefined' && NOTIFICATION_EMAILS.length > 0) {
+       NOTIFICATION_EMAILS.forEach(email => {
+         MailApp.sendEmail(email, subject, body);
+        Logger.log(`강제 테스트 이메일 발송: ${email}`);
+      });
+    }
+
+    Browser.msgBox(`강제 테스트 이메일이 발송되었습니다.\n수신자: ${recipient}\n시간: ${currentHour}시 (${isWorkTime ? '업무시간' : '업무시간 외'})`);
+  } catch (error) {
+    Logger.log(`강제 테스트 이메일 발송 실패: ${error.toString()}`);
+    Browser.msgBox(`이메일 발송 실패: ${error.toString()}`);
+  }
+}
 function testMultipleTemperatures() {
-  const temperatures = [30, 33, 35, 38, 40]; // 테스트할 체감온도들
-  
+  const temperatures = [29, 31, 33, 34]; // 테스트할 체감온도들
+
+  // 타이머 초기화
+  resetEmailTimer();
+
   temperatures.forEach((temp, index) => {
     const now = new Date();
     now.setMinutes(now.getMinutes() - index * 10); // 시간을 다르게 설정
-    
+
     const testData = [
       Utilities.formatDate(now, "Asia/Seoul", "yyyy-MM-dd HH:mm"),
       "80",           // 습도
@@ -381,21 +604,30 @@ function testMultipleTemperatures() {
       "남서",         // 10분풍향
       "3.0"           // 10분풍속
     ];
-    
+
     Logger.log(`\n테스트 ${index + 1}: 체감온도 ${temp}°C`);
-    
-    // 33도 이상인 경우만 이메일 발송
-    if (temp >= 33) {
-      checkTemperatureAndSendEmail(testData);
-      Logger.log(`→ 이메일 발송됨 (체감온도: ${temp}°C)`);
+
+    // 31도 이상인 경우만 이메일 발송 (첫 번째만 발송, 나머지는 30분 제한)
+    if (temp >= 31) {
+      if (index === 1) { // 31도 테스트만 발송 (첫 번째)
+        checkTemperatureAndSendEmail(testData);
+        Logger.log(`→ 이메일 발송됨 (체감온도: ${temp}°C)`);
+        // 다음 테스트를 위해 31분 후 시간으로 설정
+        const properties = PropertiesService.getScriptProperties();
+        const futureTime = new Date().getTime() - (31 * 60 * 1000);
+        properties.setProperty('LAST_EMAIL_TIME', futureTime.toString());
+      } else {
+        checkTemperatureAndSendEmail(testData);
+        Logger.log(`→ 이메일 발송 시도 (체감온도: ${temp}°C)`);
+      }
     } else {
-      Logger.log(`→ 이메일 미발송 (체감온도: ${temp}°C, 33도 미만)`);
+      Logger.log(`→ 이메일 미발송 (체감온도: ${temp}°C, 31도 미만)`);
     }
-    
+
     // 이메일 발송 간격을 두기 위한 대기
     Utilities.sleep(1000); // 1초 대기
   });
-  
+
   Logger.log("\n모든 테스트 완료!");
 }
 
@@ -406,34 +638,57 @@ function checkEmailSettings() {
   const codeEmail = (NOTIFICATION_EMAIL !== "your-email@example.com") ? NOTIFICATION_EMAIL : null;
   const configuredEmail = sheetEmail || codeEmail || defaultEmail;
   const remainingQuota = MailApp.getRemainingDailyQuota();
-  
+
+  // 마지막 이메일 발송 시간 확인
+  const properties = PropertiesService.getScriptProperties();
+  const lastEmailTime = properties.getProperty('LAST_EMAIL_TIME');
+  let lastEmailDate = "없음";
+  if (lastEmailTime) {
+    lastEmailDate = new Date(parseInt(lastEmailTime)).toLocaleString('ko-KR');
+  }
+
+  // 현재 시간 정보
+  const now = new Date();
+  const currentHour = now.getHours();
+  const isWorkTime = isWorkHours();
+
   Logger.log("=== 이메일 설정 정보 ===");
   Logger.log(`현재 로그인 계정: ${defaultEmail}`);
   Logger.log(`스프레드시트 설정 (K1 셀): ${sheetEmail || "없음"}`);
   Logger.log(`코드 내 설정: ${codeEmail || "없음"}`);
   Logger.log(`최종 사용될 이메일: ${configuredEmail}`);
   Logger.log(`오늘 남은 이메일 발송 가능 횟수: ${remainingQuota}`);
-  
+  Logger.log(`마지막 이메일 발송 시간: ${lastEmailDate}`);
+  Logger.log(`현재 시간: ${currentHour}시 (${isWorkTime ? '업무시간 - 알림 가능' : '업무시간 외 - 알림 안함'})`);
+
   // 여러 이메일 설정이 있는 경우
   if (typeof NOTIFICATION_EMAILS !== 'undefined' && NOTIFICATION_EMAILS.length > 0) {
     Logger.log(`다중 수신자 설정: ${NOTIFICATION_EMAILS.join(', ')}`);
   }
-  
+
   // 테스트 이메일 발송
   try {
     MailApp.sendEmail(
       configuredEmail,
-      "[테스트] 기상 알림 시스템 작동 확인",
+      "[테스트] 기상 알림 시스템 작동 확인 (31도 기준)",
       "이 이메일은 기상 알림 시스템이 정상적으로 작동하는지 확인하는 테스트 이메일입니다.\n\n" +
-      "체감온도가 33도 이상일 때 이와 같은 형식으로 알림 이메일이 발송됩니다.\n\n" +
+      "체감온도가 31도 이상일 때 30분 간격으로 이와 같은 형식으로 알림 이메일이 발송됩니다.\n\n" +
+      "알림 기준:\n" +
+      "• 31도 이상 33도 미만: 2시간 근무시 10분 휴식\n" +
+      "• 33도 이상: 2시간 근무시 20분 휴식\n\n" +
+      "발송 시간:\n" +
+      "• 업무시간: 오전 6시 ~ 오후 7시 (알림 발송)\n" +
+      "• 업무시간 외: 오후 7시 ~ 오전 6시 (알림 중단)\n\n" +
       `이메일 설정 우선순위:\n` +
       `1. 스프레드시트 K1 셀: ${sheetEmail || "설정 안됨"}\n` +
       `2. 코드 내 설정: ${codeEmail || "설정 안됨"}\n` +
       `3. 기본값 (로그인 계정): ${defaultEmail}\n\n` +
-      `현재 사용 중: ${configuredEmail}`
+      `현재 사용 중: ${configuredEmail}\n` +
+      `현재 시간: ${currentHour}시 (${isWorkTime ? '업무시간' : '업무시간 외'})\n` +
+      `마지막 알림 발송: ${lastEmailDate}`
     );
     Logger.log("테스트 이메일 발송 성공!");
-    Browser.msgBox(`테스트 이메일이 ${configuredEmail}로 발송되었습니다. 이메일을 확인해주세요.`);
+    Browser.msgBox(`테스트 이메일이 ${configuredEmail}로 발송되었습니다.\n현재 시간: ${currentHour}시 (${isWorkTime ? '업무시간' : '업무시간 외'})\n이메일을 확인해주세요.`);
   } catch (error) {
     Logger.log(`이메일 발송 실패: ${error.toString()}`);
     Browser.msgBox(`이메일 발송 실패: ${error.toString()}`);
@@ -444,26 +699,37 @@ function checkEmailSettings() {
 function showSetupGuide() {
   const ui = SpreadsheetApp.getUi();
   const guide = `
-🌡️ 기상 알림 시스템 설정 가이드
+🌡️ 기상 알림 시스템 설정 가이드 (31도 기준)
 
 📧 이메일 설정 방법 (3가지 중 택1):
 1. 스프레드시트 K1 셀에 이메일 입력 (가장 쉬움)
 2. 코드에서 NOTIFICATION_EMAIL 변경
 3. 별도 설정 없이 구글 계정 이메일 사용
 
+🌡️ 알림 기준:
+- 체감온도 31°C 이상: 2시간 근무시 10분 휴식
+- 체감온도 33°C 이상: 2시간 근무시 20분 휴식
+
+⏰ 발송 주기:
+- 데이터 수집: 10분마다 (24시간)
+- 이메일 발송: 30분 간격 (중복 방지)
+- 발송 시간: 오전 6시 ~ 오후 7시 (업무시간만)
+- 업무시간 외(오후 7시 ~ 오전 6시): 이메일 발송 안함
+
 ⚙️ 자동 실행 설정:
 - 메뉴 → '⏰ 자동 실행 설정' 클릭
 - 10분마다 자동으로 날씨 확인
-- 체감온도 33°C 이상시 이메일 알림
+- 조건 만족시 30분 간격으로 이메일 알림
 
 🧪 테스트:
-- 메뉴 → '🧪 테스트 이메일 발송' 클릭
-- 실제 날씨와 관계없이 테스트 가능
+- testEmailAlert(): 현재 시간 기준 테스트
+- testEmailAlertForceMode(): 업무시간 무관 강제 테스트
+- resetEmailTimer(): 타이머 초기화
 
 📊 데이터 정리:
-- 30일 이상 된 데이터는 매일 새벽 3시 자동 삭제
+- 2년 이상 된 데이터는 매일 새벽 3시 자동 삭제
 - 필요없으면 cleanOldData 트리거 삭제
 `;
-  
+
   ui.alert('설정 가이드', guide, ui.ButtonSet.OK);
 }
